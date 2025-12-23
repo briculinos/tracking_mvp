@@ -115,6 +115,50 @@ function inverseTransformPoint(
   };
 }
 
+/**
+ * Apply zoom and pan transform to a point.
+ */
+function applyZoomPan(
+  x: number,
+  y: number,
+  zoom: number,
+  pan: { x: number; y: number },
+  canvasWidth: number,
+  canvasHeight: number
+): { x: number; y: number } {
+  const centerX = canvasWidth / 2;
+  const centerY = canvasHeight / 2;
+  return {
+    x: (x - centerX) * zoom + centerX + pan.x,
+    y: (y - centerY) * zoom + centerY + pan.y
+  };
+}
+
+/**
+ * Inverse zoom and pan transform - converts canvas position back to pre-zoom coordinates.
+ */
+function inverseZoomPan(
+  x: number,
+  y: number,
+  zoom: number,
+  pan: { x: number; y: number },
+  canvasWidth: number,
+  canvasHeight: number
+): { x: number; y: number } {
+  const centerX = canvasWidth / 2;
+  const centerY = canvasHeight / 2;
+  return {
+    x: (x - pan.x - centerX) / zoom + centerX,
+    y: (y - pan.y - centerY) / zoom + centerY
+  };
+}
+
+interface VisibleStats {
+  pointsInView: number;
+  totalPoints: number;
+  percentage: string;
+}
+
 interface Props {
   heatmapData: HeatmapResponse | DwellTimeResponse | null | undefined;
   floorPlan: FloorPlan | undefined;
@@ -135,6 +179,10 @@ interface Props {
   onScaleSettingsChange?: (settings: ScaleSettings) => void;
   showFloorPlan?: boolean;
   showHeatmap?: boolean;
+  // Zoom control props
+  externalZoom?: number;
+  onZoomChange?: (zoom: number) => void;
+  onVisibleStatsChange?: (stats: VisibleStats | null) => void;
 }
 
 interface DrawingState {
@@ -164,6 +212,9 @@ export default function HeatmapCanvas({
   showFloorPlan = true,
   showHeatmap = true,
   onCalibrationClick,
+  externalZoom,
+  onZoomChange,
+  onVisibleStatsChange,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -171,6 +222,14 @@ export default function HeatmapCanvas({
   const [drawing, setDrawing] = useState<DrawingState | null>(null);
   const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number; value: number } | null>(null);
   const [floorPlanImage, setFloorPlanImage] = useState<HTMLImageElement | null>(null);
+
+  // Zoom and pan state
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStarted, setPanStarted] = useState(false); // Track if pan threshold exceeded
+  const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const PAN_THRESHOLD = 8; // Minimum pixels to move before panning starts
 
   const createZone = useCreateZone();
 
@@ -202,6 +261,57 @@ export default function HeatmapCanvas({
     window.addEventListener('resize', updateDimensions);
     return () => window.removeEventListener('resize', updateDimensions);
   }, []);
+
+  // Sync zoom with external control
+  useEffect(() => {
+    if (externalZoom !== undefined && externalZoom !== zoom) {
+      setZoom(externalZoom);
+      // Reset pan when zoom is reset to 1
+      if (externalZoom === 1) {
+        setPan({ x: 0, y: 0 });
+      }
+    }
+  }, [externalZoom]);
+
+  // Wheel zoom handler - requires Ctrl/Cmd key to zoom
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Only zoom when Ctrl (Windows/Linux) or Cmd (Mac) is held
+      if (!e.ctrlKey && !e.metaKey) {
+        return; // Allow normal page scroll
+      }
+
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+      const newZoom = Math.max(0.5, Math.min(10, zoom * zoomFactor));
+
+      // Zoom toward mouse position
+      const scale = newZoom / zoom;
+      setPan(prev => ({
+        x: mouseX - (mouseX - prev.x) * scale,
+        y: mouseY - (mouseY - prev.y) * scale
+      }));
+      setZoom(newZoom);
+      onZoomChange?.(newZoom);
+    };
+
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [zoom, onZoomChange]);
+
+  // Reset zoom/pan when floor or store changes
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    onZoomChange?.(1);
+  }, [storeId, floor]);
 
   // Calculate effective bounds for coordinate mapping
   // When floor plan exists, use floor plan bounds (show full image, let user adjust)
@@ -252,6 +362,72 @@ export default function HeatmapCanvas({
   // Track min/max values for legend
   const [legendValues, setLegendValues] = useState<{ min: number; max: number } | null>(null);
 
+  // Calculate visible stats when zoomed
+  useEffect(() => {
+    if (!onVisibleStatsChange || !heatmapData) {
+      onVisibleStatsChange?.(null);
+      return;
+    }
+
+    // If not zoomed, no need to filter
+    if (zoom === 1 && pan.x === 0 && pan.y === 0) {
+      onVisibleStatsChange(null);
+      return;
+    }
+
+    const width = dimensions.width;
+    const height = dimensions.height;
+
+    // Calculate visible data bounds by inverse transforming canvas corners
+    const corners = [
+      { x: 0, y: 0 },
+      { x: width, y: 0 },
+      { x: 0, y: height },
+      { x: width, y: height }
+    ];
+
+    const dataCorners = corners.map(corner => {
+      const unzoomed = inverseZoomPan(corner.x, corner.y, zoom, pan, width, height);
+      const untransformed = inverseTransformPoint(unzoomed.x, unzoomed.y, floorPlanAdjustment, width, height);
+      return canvasToData(untransformed.x, untransformed.y, virtualFloorPlan, width, height);
+    });
+
+    const visibleBounds = {
+      minX: Math.min(...dataCorners.map(c => c.x)),
+      maxX: Math.max(...dataCorners.map(c => c.x)),
+      minY: Math.min(...dataCorners.map(c => c.y)),
+      maxY: Math.max(...dataCorners.map(c => c.y))
+    };
+
+    // Filter points by visible bounds
+    if (viewMode === 'tracks' && (heatmapData as HeatmapResponse).points) {
+      const points = (heatmapData as HeatmapResponse).points;
+      const totalPoints = (heatmapData as HeatmapResponse).total_returned || points.length;
+      const visiblePoints = points.filter(p =>
+        p.x >= visibleBounds.minX && p.x <= visibleBounds.maxX &&
+        p.y >= visibleBounds.minY && p.y <= visibleBounds.maxY
+      );
+      onVisibleStatsChange({
+        pointsInView: visiblePoints.length,
+        totalPoints,
+        percentage: ((visiblePoints.length / totalPoints) * 100).toFixed(1)
+      });
+    } else if (viewMode === 'dwell' && (heatmapData as DwellTimeResponse).cells) {
+      const cells = (heatmapData as DwellTimeResponse).cells;
+      const visibleCells = cells.filter(c =>
+        c.x >= visibleBounds.minX && c.x <= visibleBounds.maxX &&
+        c.y >= visibleBounds.minY && c.y <= visibleBounds.maxY
+      );
+      const totalDwell = cells.reduce((sum, c) => sum + (c.avg_dwell_seconds || 0), 0);
+      const visibleDwell = visibleCells.reduce((sum, c) => sum + (c.avg_dwell_seconds || 0), 0);
+      onVisibleStatsChange({
+        pointsInView: visibleCells.length,
+        totalPoints: cells.length,
+        percentage: totalDwell > 0 ? ((visibleDwell / totalDwell) * 100).toFixed(1) : '0'
+      });
+    }
+  }, [zoom, pan, heatmapData, viewMode, dimensions, floorPlanAdjustment, virtualFloorPlan, onVisibleStatsChange]);
+
   // Draw the heatmap
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -264,6 +440,10 @@ export default function HeatmapCanvas({
     ctx.clearRect(0, 0, dimensions.width, dimensions.height);
 
     // Draw floor plan background - preserve aspect ratio, no stretching
+    // Apply zoom/pan transform for floor plan
+    const centerX = dimensions.width / 2;
+    const centerY = dimensions.height / 2;
+
     if (showFloorPlan && floorPlanImage) {
       const imgAspect = floorPlanImage.width / floorPlanImage.height;
       const canvasAspect = dimensions.width / dimensions.height;
@@ -286,7 +466,14 @@ export default function HeatmapCanvas({
 
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+
+      // Apply zoom/pan transform for floor plan
+      ctx.save();
+      ctx.translate(centerX + pan.x, centerY + pan.y);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-centerX, -centerY);
       ctx.drawImage(floorPlanImage, drawX, drawY, drawWidth, drawHeight);
+      ctx.restore();
     } else {
       // Clean white/light background
       ctx.fillStyle = showFloorPlan ? '#ffffff' : '#f8fafc';
@@ -338,18 +525,28 @@ export default function HeatmapCanvas({
                 width,
                 height
               );
-              const { x: centerX, y: centerY } = transformPoint(
+              const transformed = transformPoint(
                 canvasCoords.x,
                 canvasCoords.y,
                 floorPlanAdjustment,
                 width,
                 height
               );
+              // Apply zoom/pan
+              const { x: centerX, y: centerY } = applyZoomPan(
+                transformed.x,
+                transformed.y,
+                zoom,
+                pan,
+                width,
+                height
+              );
 
               // Very low intensity per point - will accumulate
+              const scaledRadius = radius * zoom;
               const gradient = intensityCtx.createRadialGradient(
                 centerX, centerY, 0,
-                centerX, centerY, radius
+                centerX, centerY, scaledRadius
               );
               gradient.addColorStop(0, 'rgba(255, 255, 255, 0.03)');
               gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.015)');
@@ -357,7 +554,7 @@ export default function HeatmapCanvas({
 
               intensityCtx.fillStyle = gradient;
               intensityCtx.beginPath();
-              intensityCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+              intensityCtx.arc(centerX, centerY, scaledRadius, 0, Math.PI * 2);
               intensityCtx.fill();
             }
 
@@ -476,18 +673,28 @@ export default function HeatmapCanvas({
                 dimensions.width,
                 dimensions.height
               );
-              const { x: centerX, y: centerY } = transformPoint(
+              const transformed = transformPoint(
                 canvasCoords.x,
                 canvasCoords.y,
                 floorPlanAdjustment,
                 dimensions.width,
                 dimensions.height
               );
+              // Apply zoom/pan
+              const { x: centerX, y: centerY } = applyZoomPan(
+                transformed.x,
+                transformed.y,
+                zoom,
+                pan,
+                dimensions.width,
+                dimensions.height
+              );
 
               // Draw with intensity-based opacity
+              const scaledRadius = radius * zoom;
               const gradient = intensityCtx.createRadialGradient(
                 centerX, centerY, 0,
-                centerX, centerY, radius
+                centerX, centerY, scaledRadius
               );
               const alpha = 0.1 + intensity * 0.4;
               gradient.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
@@ -495,7 +702,7 @@ export default function HeatmapCanvas({
 
               intensityCtx.fillStyle = gradient;
               intensityCtx.beginPath();
-              intensityCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+              intensityCtx.arc(centerX, centerY, scaledRadius, 0, Math.PI * 2);
               intensityCtx.fill();
             }
 
@@ -567,8 +774,11 @@ export default function HeatmapCanvas({
         dimensions.width,
         dimensions.height
       );
-      const topLeft = transformPoint(topLeftCanvas.x, topLeftCanvas.y, floorPlanAdjustment, dimensions.width, dimensions.height);
-      const bottomRight = transformPoint(bottomRightCanvas.x, bottomRightCanvas.y, floorPlanAdjustment, dimensions.width, dimensions.height);
+      const topLeftTransformed = transformPoint(topLeftCanvas.x, topLeftCanvas.y, floorPlanAdjustment, dimensions.width, dimensions.height);
+      const bottomRightTransformed = transformPoint(bottomRightCanvas.x, bottomRightCanvas.y, floorPlanAdjustment, dimensions.width, dimensions.height);
+      // Apply zoom/pan
+      const topLeft = applyZoomPan(topLeftTransformed.x, topLeftTransformed.y, zoom, pan, dimensions.width, dimensions.height);
+      const bottomRight = applyZoomPan(bottomRightTransformed.x, bottomRightTransformed.y, zoom, pan, dimensions.width, dimensions.height);
 
       const width = bottomRight.x - topLeft.x;
       const height = bottomRight.y - topLeft.y;
@@ -754,7 +964,7 @@ export default function HeatmapCanvas({
       }
     }
 
-  }, [heatmapData, floorPlanImage, zones, zoneStats, selectedZone, drawing, dimensions, viewMode, virtualFloorPlan, legendValues, scaleSettings, floorPlanAdjustment, onDataRangeChange, calibration, showFloorPlan, showHeatmap]);
+  }, [heatmapData, floorPlanImage, zones, zoneStats, selectedZone, drawing, dimensions, viewMode, virtualFloorPlan, legendValues, scaleSettings, floorPlanAdjustment, onDataRangeChange, calibration, showFloorPlan, showHeatmap, zoom, pan]);
 
   // Handle mouse events for zone drawing and calibration
   const handleMouseDown = useCallback(
@@ -789,8 +999,11 @@ export default function HeatmapCanvas({
             dimensions.height
           );
           // Apply transform to get the actual screen position of the zone
-          const topLeft = transformPoint(topLeftCanvas.x, topLeftCanvas.y, floorPlanAdjustment, dimensions.width, dimensions.height);
-          const bottomRight = transformPoint(bottomRightCanvas.x, bottomRightCanvas.y, floorPlanAdjustment, dimensions.width, dimensions.height);
+          const tl = transformPoint(topLeftCanvas.x, topLeftCanvas.y, floorPlanAdjustment, dimensions.width, dimensions.height);
+          const br = transformPoint(bottomRightCanvas.x, bottomRightCanvas.y, floorPlanAdjustment, dimensions.width, dimensions.height);
+          // Apply zoom/pan
+          const topLeft = applyZoomPan(tl.x, tl.y, zoom, pan, dimensions.width, dimensions.height);
+          const bottomRight = applyZoomPan(br.x, br.y, zoom, pan, dimensions.width, dimensions.height);
 
           // Handle case where transform might flip coordinates
           const minX = Math.min(topLeft.x, bottomRight.x);
@@ -803,6 +1016,9 @@ export default function HeatmapCanvas({
             return;
           }
         }
+        // Not clicking on a zone - start panning
+        setIsPanning(true);
+        panStartRef.current = { x, y, panX: pan.x, panY: pan.y };
         return;
       }
 
@@ -813,7 +1029,7 @@ export default function HeatmapCanvas({
         currentY: y,
       });
     },
-    [isDrawingZone, zones, selectedZone, virtualFloorPlan, dimensions, onSelectZone, calibration, onCalibrationClick, floorPlanAdjustment]
+    [isDrawingZone, zones, selectedZone, virtualFloorPlan, dimensions, onSelectZone, calibration, onCalibrationClick, floorPlanAdjustment, zoom, pan]
   );
 
   const handleMouseMove = useCallback(
@@ -824,6 +1040,27 @@ export default function HeatmapCanvas({
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
 
+      // Handle panning with threshold
+      if (isPanning) {
+        const dx = x - panStartRef.current.x;
+        const dy = y - panStartRef.current.y;
+
+        // Check if we've exceeded the pan threshold
+        if (!panStarted) {
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance < PAN_THRESHOLD) {
+            return; // Don't pan yet
+          }
+          setPanStarted(true);
+        }
+
+        setPan({
+          x: panStartRef.current.panX + dx,
+          y: panStartRef.current.panY + dy
+        });
+        return;
+      }
+
       // Update drawing
       if (drawing) {
         setDrawing((prev) => prev ? { ...prev, currentX: x, currentY: y } : null);
@@ -832,7 +1069,10 @@ export default function HeatmapCanvas({
       // Find hovered cell (only for dwell mode which still has cells)
       if (viewMode === 'dwell' && (heatmapData as DwellTimeResponse)?.cells) {
         const dwellData = heatmapData as DwellTimeResponse;
-        const dataCoords = canvasToData(x, y, virtualFloorPlan, dimensions.width, dimensions.height);
+        // Need to inverse zoom/pan first, then inverse floor plan adjustment
+        const unzoomed = inverseZoomPan(x, y, zoom, pan, dimensions.width, dimensions.height);
+        const untransformed = inverseTransformPoint(unzoomed.x, unzoomed.y, floorPlanAdjustment, dimensions.width, dimensions.height);
+        const dataCoords = canvasToData(untransformed.x, untransformed.y, virtualFloorPlan, dimensions.width, dimensions.height);
         const gridSize = dwellData.grid_size;
 
         const cell = dwellData.cells.find((c) => {
@@ -852,10 +1092,17 @@ export default function HeatmapCanvas({
         setHoveredCell(null);
       }
     },
-    [drawing, heatmapData, virtualFloorPlan, dimensions, viewMode]
+    [drawing, heatmapData, virtualFloorPlan, dimensions, viewMode, isPanning, panStarted, zoom, pan, floorPlanAdjustment]
   );
 
   const handleMouseUp = useCallback(async () => {
+    // Stop panning if we were panning
+    if (isPanning) {
+      setIsPanning(false);
+      setPanStarted(false);
+      return;
+    }
+
     if (!drawing || !isDrawingZone) return;
 
     const width = Math.abs(drawing.currentX - drawing.startX);
@@ -867,17 +1114,29 @@ export default function HeatmapCanvas({
       return;
     }
 
-    // Apply inverse transform to get back to original canvas space before data conversion
-    const invStart = inverseTransformPoint(
+    // First inverse zoom/pan, then inverse floor plan adjustment
+    const unzoomedStart = inverseZoomPan(
       Math.min(drawing.startX, drawing.currentX),
       Math.min(drawing.startY, drawing.currentY),
+      zoom, pan, dimensions.width, dimensions.height
+    );
+    const unzoomedEnd = inverseZoomPan(
+      Math.max(drawing.startX, drawing.currentX),
+      Math.max(drawing.startY, drawing.currentY),
+      zoom, pan, dimensions.width, dimensions.height
+    );
+
+    // Apply inverse floor plan adjustment
+    const invStart = inverseTransformPoint(
+      unzoomedStart.x,
+      unzoomedStart.y,
       floorPlanAdjustment,
       dimensions.width,
       dimensions.height
     );
     const invEnd = inverseTransformPoint(
-      Math.max(drawing.startX, drawing.currentX),
-      Math.max(drawing.startY, drawing.currentY),
+      unzoomedEnd.x,
+      unzoomedEnd.y,
       floorPlanAdjustment,
       dimensions.width,
       dimensions.height
@@ -922,7 +1181,16 @@ export default function HeatmapCanvas({
     }
 
     setDrawing(null);
-  }, [drawing, isDrawingZone, virtualFloorPlan, dimensions, zones, storeId, floor, createZone, onZoneCreated, floorPlanAdjustment]);
+  }, [drawing, isDrawingZone, virtualFloorPlan, dimensions, zones, storeId, floor, createZone, onZoneCreated, floorPlanAdjustment, isPanning, zoom, pan]);
+
+  // Determine cursor style
+  const cursorStyle = calibration?.isCalibrating
+    ? 'cursor-crosshair'
+    : isDrawingZone
+      ? 'cursor-crosshair'
+      : isPanning
+        ? 'cursor-grabbing'
+        : 'cursor-grab';
 
   return (
     <div ref={containerRef} className="relative">
@@ -930,13 +1198,7 @@ export default function HeatmapCanvas({
         ref={canvasRef}
         width={dimensions.width}
         height={dimensions.height}
-        className={`${
-          calibration?.isCalibrating
-            ? 'cursor-crosshair'
-            : isDrawingZone
-              ? 'cursor-crosshair'
-              : 'cursor-pointer'
-        }`}
+        className={cursorStyle}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
