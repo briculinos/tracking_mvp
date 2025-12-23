@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import HeatmapCanvas from './HeatmapCanvas';
-import { formatNumber } from '../utils/coordinates';
 import type {
   FloorPlan,
   FloorPlanAdjustment,
@@ -36,6 +35,7 @@ interface HeatmapPanelProps {
   onDataRangeChange: (min: number, max: number) => void;
   onCalibrationClick: (point: CalibrationPoint) => void;
   onScaleSettingsChange: (settings: ScaleSettings) => void;
+  onViewModeChange?: (mode: ViewMode) => void;
 }
 
 export default function HeatmapPanel({
@@ -58,6 +58,7 @@ export default function HeatmapPanel({
   onDataRangeChange,
   onCalibrationClick,
   onScaleSettingsChange,
+  onViewModeChange,
 }: HeatmapPanelProps) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>('full');
 
@@ -66,7 +67,33 @@ export default function HeatmapPanel({
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
         <div className="flex items-center gap-4">
-          <h3 className="text-3xl font-semibold text-gray-900">{title}</h3>
+          {/* View Mode Toggle */}
+          {onViewModeChange ? (
+            <div className="flex items-center bg-gray-100 rounded-lg p-1">
+              <button
+                onClick={() => onViewModeChange('tracks')}
+                className={`px-4 py-2 rounded-md text-lg font-medium transition-colors ${
+                  viewMode === 'tracks'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Tracks
+              </button>
+              <button
+                onClick={() => onViewModeChange('dwell')}
+                className={`px-4 py-2 rounded-md text-lg font-medium transition-colors ${
+                  viewMode === 'dwell'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Dwell Time
+              </button>
+            </div>
+          ) : (
+            <h3 className="text-3xl font-semibold text-gray-900">{title}</h3>
+          )}
         </div>
         <div className="flex items-center gap-2 text-lg">
           <button
@@ -83,7 +110,7 @@ export default function HeatmapPanel({
               displayMode === 'dataOnly' ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:bg-gray-100'
             }`}
           >
-            {viewMode === 'tracks' ? 'Tracks Density' : 'Dwell Time'}
+            Data Only
           </button>
         </div>
       </div>

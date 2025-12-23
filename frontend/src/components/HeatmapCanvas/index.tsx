@@ -643,7 +643,6 @@ export default function HeatmapCanvas({
     const legendBoxWidth = 160;  // Wide enough for large numbers
     const legendX = dimensions.width - legendBoxWidth - 15;
     const legendY = 15;
-    const padding = 12;
 
     // Legend background
     ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';

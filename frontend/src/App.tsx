@@ -12,7 +12,7 @@ import HeatmapPanel from './components/HeatmapPanel';
 import FloorPlanUpload from './components/FloorPlanUpload';
 import InsightsPanel from './components/InsightsPanel';
 import toast from 'react-hot-toast';
-import type { AppFilters, Zone, CalibrationState, CalibrationPoint, AffineTransform, ScaleSettings } from './types';
+import type { AppFilters, Zone, CalibrationState, CalibrationPoint, AffineTransform, ScaleSettings, ViewMode } from './types';
 
 /**
  * Solve for affine transformation matrix given 3 point pairs.
@@ -86,6 +86,7 @@ export default function App() {
   const [selectedZone, setSelectedZone] = useState<Zone | null>(null);
   const [isDrawingZone, setIsDrawingZone] = useState(false);
   const [showFloorPlanUpload, setShowFloorPlanUpload] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>('tracks');
 
   // Separate scale settings for tracks and dwell panels
   const [tracksScaleSettings, setTracksScaleSettings] = useState<ScaleSettings>({
@@ -640,14 +641,14 @@ export default function App() {
           onDownloadReport={handleDownloadReport}
         />
 
-        {/* Dual Heatmap Panels */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {/* Tracks Panel */}
-          <div ref={tracksPanelRef}>
+        {/* Heatmap + AI Insights Side by Side */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Heatmap Panel with Toggle */}
+          <div ref={viewMode === 'tracks' ? tracksPanelRef : dwellPanelRef}>
             <HeatmapPanel
-              title="Tracks"
-              viewMode="tracks"
-              heatmapData={tracksData}
+              title={viewMode === 'tracks' ? 'Tracks' : 'Dwell Time'}
+              viewMode={viewMode}
+              heatmapData={viewMode === 'tracks' ? tracksData : dwellData}
               floorPlan={currentFloorPlan}
               zones={zones || []}
               zoneStats={zoneStats || []}
@@ -655,60 +656,36 @@ export default function App() {
               isDrawingZone={isDrawingZone}
               storeId={filters.storeId || 0}
               floor={filters.floor}
-              scaleSettings={tracksScaleSettings}
+              scaleSettings={viewMode === 'tracks' ? tracksScaleSettings : dwellScaleSettings}
               floorPlanAdjustment={filters.floorPlanAdjustment}
               calibration={calibration}
-              isLoading={tracksLoading}
+              isLoading={viewMode === 'tracks' ? tracksLoading : dwellLoading}
               onZoneCreated={handleZoneCreated}
               onSelectZone={setSelectedZone}
-              onDataRangeChange={handleTracksDataRangeChange}
+              onDataRangeChange={viewMode === 'tracks' ? handleTracksDataRangeChange : handleDwellDataRangeChange}
               onCalibrationClick={handleCalibrationPointClick}
-              onScaleSettingsChange={setTracksScaleSettings}
+              onScaleSettingsChange={viewMode === 'tracks' ? setTracksScaleSettings : setDwellScaleSettings}
+              onViewModeChange={setViewMode}
             />
           </div>
 
-          {/* Dwell Panel */}
-          <div ref={dwellPanelRef}>
-            <HeatmapPanel
-              title="Dwell"
-              viewMode="dwell"
-              heatmapData={dwellData}
-              floorPlan={currentFloorPlan}
-              zones={zones || []}
-              zoneStats={zoneStats || []}
-              selectedZone={selectedZone}
-              isDrawingZone={isDrawingZone}
-              storeId={filters.storeId || 0}
-              floor={filters.floor}
-              scaleSettings={dwellScaleSettings}
-              floorPlanAdjustment={filters.floorPlanAdjustment}
-              calibration={calibration}
-              isLoading={dwellLoading}
-              onZoneCreated={handleZoneCreated}
-              onSelectZone={setSelectedZone}
-              onDataRangeChange={handleDwellDataRangeChange}
-              onCalibrationClick={handleCalibrationPointClick}
-              onScaleSettingsChange={setDwellScaleSettings}
-            />
-          </div>
+          {/* AI Insights Panel */}
+          {filters.storeId && (
+            <div ref={insightsPanelRef}>
+              <InsightsPanel
+                viewMode={viewMode}
+                storeId={filters.storeId}
+                floor={filters.floor}
+                startDate={filters.startDate}
+                endDate={filters.endDate}
+                startHour={filters.startHour}
+                endHour={filters.endHour}
+                heatmapData={viewMode === 'tracks' ? tracksData : dwellData}
+                zonesCount={zones?.length || 0}
+              />
+            </div>
+          )}
         </div>
-
-        {/* AI Insights Panel */}
-        {filters.storeId && (
-          <div ref={insightsPanelRef}>
-            <InsightsPanel
-              viewMode="tracks"
-              storeId={filters.storeId}
-              floor={filters.floor}
-              startDate={filters.startDate}
-              endDate={filters.endDate}
-              startHour={filters.startHour}
-              endHour={filters.endHour}
-              heatmapData={tracksData}
-              zonesCount={zones?.length || 0}
-            />
-          </div>
-        )}
       </div>
 
       {/* Floor Plan Upload Modal */}
