@@ -258,10 +258,14 @@ npm run dev
 - Random sampling preserves data distribution
 - Shows actual database count vs rendered count
 
-### AI Insights
+### AI Insights (Enhanced)
 - Claude-powered analysis of store data
 - Actionable retail optimization suggestions
 - Store-aware context (knows IKEA Malmö)
+- **Custom prompt input**: Type specific questions for focused analysis
+- **Clickable items**: Click on any Alarm or Action to get detailed Q&A follow-up
+- **Q&A mode**: Follow-up responses are direct 4-6 sentence answers
+- **Back to overview**: Return to original insights after viewing Q&A answer
 
 ### Improved Zone Display
 - Larger, more readable text
@@ -288,3 +292,15 @@ npm run dev
 - [ ] Real-time data streaming
 - [ ] Mobile responsive layout
 - [ ] More detailed AI insights with heatmap image analysis
+
+---
+
+## Checkpoint: Pre-UI Redesign (2025-12-23)
+
+**Current State**: Stable baseline before major UI changes
+- Two-column layout: Tracks + Dwell panels side by side
+- AI Insights panel below with Q&A follow-up support
+- Sidebar with floor plan calibration and zone management
+- Legend in top-right corner of heatmap panels
+
+**To restore this state**: `git checkout <this-commit-hash>`

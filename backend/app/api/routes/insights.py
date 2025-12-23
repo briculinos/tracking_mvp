@@ -25,12 +25,17 @@ class InsightsRequest(BaseModel):
     active_cells: Optional[int] = None
     # Zone data
     zones_count: Optional[int] = None
+    # Custom user prompt
+    custom_prompt: Optional[str] = None
+    # Follow-up flag for Q&A style responses
+    is_followup: bool = False
 
 
 class InsightsResponse(BaseModel):
     analysis: str
     alarms: list[str]
     actions: list[str]
+    answer: Optional[str] = None  # For Q&A follow-up responses
 
 
 @router.post("/generate")
@@ -48,6 +53,40 @@ async def generate_insights(request: InsightsRequest) -> InsightsResponse:
         445: "IKEA Malmö, Sweden"
     }
     store_name = store_names.get(request.store_id, f"IKEA Store {request.store_id}")
+
+    # Handle follow-up Q&A requests differently
+    if request.is_followup and request.custom_prompt:
+        followup_system = """You are a senior retail intelligence analyst for IKEA stores.
+Provide direct, actionable answers. Be specific and practical.
+Do not use section headers or bullet points - write in clear paragraphs."""
+
+        followup_prompt = f"""Context:
+- Store: {store_name} (Floor {request.floor})
+- Date range: {request.start_date} → {request.end_date}
+- Time window: {request.start_hour}:00 to {request.end_hour}:00
+
+USER QUESTION:
+{request.custom_prompt}
+
+Provide a direct, actionable answer in 4-6 sentences. Be specific to this IKEA store.
+Include: what exactly to do, where in the store, expected impact, and how to measure success.
+Write a single cohesive paragraph without any headers or formatting."""
+
+        try:
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=500,
+                system=followup_system,
+                messages=[{"role": "user", "content": followup_prompt}]
+            )
+            return InsightsResponse(
+                analysis="",
+                alarms=[],
+                actions=[],
+                answer=message.content[0].text.strip()
+            )
+        except anthropic.APIError as e:
+            raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
 
     # System prompt for retail intelligence analyst role
     system_prompt = """You are a senior retail intelligence analyst specialized in large-format IKEA stores.
@@ -114,6 +153,15 @@ Provide 3 actions, each explicit and intentional:
 
 Actions must be feasible inside a live IKEA store and suitable for A/B testing."""
 
+        # Add custom prompt if provided
+        if request.custom_prompt and request.custom_prompt.strip():
+            prompt += f"""
+
+ADDITIONAL USER REQUEST:
+{request.custom_prompt.strip()}
+
+Please incorporate this specific request into your analysis while maintaining the output format above."""
+
     else:  # dwell mode
         total_dwell = request.total_dwell_time or 0
         avg_dwell = request.avg_dwell_time or 0
@@ -161,6 +209,15 @@ Provide 3 targeted actions, each specifying:
 - What intervention to apply
 - Where (zone type or store function)
 - Why it should improve engagement, conversion, or flow efficiency"""
+
+        # Add custom prompt if provided
+        if request.custom_prompt and request.custom_prompt.strip():
+            prompt += f"""
+
+ADDITIONAL USER REQUEST:
+{request.custom_prompt.strip()}
+
+Please incorporate this specific request into your analysis while maintaining the output format above."""
 
     try:
         message = client.messages.create(
